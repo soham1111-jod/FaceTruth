@@ -1,28 +1,26 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_from_directory
 import os
 import torch
 from torchvision import transforms
 from PIL import Image
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')  # Use non-GUI backend
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import base64
 import io
-import gc  # Added for memory management
+import gc
 from werkzeug.utils import secure_filename
 from model import MesoNet
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'static/images'
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
-# Create upload folder
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# Optimized transform with smaller image size
 transform = transforms.Compose([
-    transforms.Resize((256, 256)),  # Reduced from 256x256 to save memory
+    transforms.Resize((256, 256)),  # Match your trained model
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
@@ -30,35 +28,29 @@ transform = transforms.Compose([
 device = torch.device("cpu")
 model = MesoNet().to(device)
 
-# Load model with error handling
 try:
-    model.load_state_dict(torch.load("mesonet_model.pth", map_location=torch.device('cpu')))
+    model.load_state_dict(torch.load("mesonet_model.pth", map_location=device))
     model.eval()
     print("Model loaded successfully")
 except Exception as e:
     print(f"Error loading model: {e}")
 
-# Try to optimize model with TorchScript (optional)
-try:
-    model = torch.jit.script(model)
-    print("Model converted to TorchScript for efficiency")
-except Exception as e:
-    print(f"TorchScript conversion failed: {e}")
+# ADDED: Custom static file route
+@app.route('/static/<path:path>')
+def serve_static(path):
+    return send_from_directory('static', path)
 
 def predict(image_path):
     try:
         image = Image.open(image_path).convert('RGB')
-        image = transform(image).unsqueeze(0)
-        image = image.to(device)
+        image = transform(image).unsqueeze(0).to(device)
         
-        # Clear memory before inference
         gc.collect()
         
         with torch.no_grad():
             outputs = model(image)
             probs = outputs[0].cpu().detach().numpy()
             
-        # Clean up intermediate variables
         del image, outputs
         gc.collect()
         
@@ -87,12 +79,11 @@ def predict_image():
                 file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                 file.save(file_path)
                 
-                # Force garbage collection before prediction
                 gc.collect()
                 
                 prob = predict(file_path)
                 if prob is None:
-                    os.remove(file_path)  # Clean up immediately on error
+                    os.remove(file_path)
                     return render_template('predict.html', error="Error processing image")
                 
                 prob = prob[0]
@@ -100,13 +91,12 @@ def predict_image():
                 prob_fake = (1 - prob) * 100
                 prediction_label = 'Real' if prob > 0.5 else 'Fake'
                 
-                # Create memory-efficient plot
-                labels = ['Real', 'Fake']
-                fig, ax = plt.subplots(figsize=(4, 3), facecolor='#1F2937')  # Smaller figure
+                fig, ax = plt.subplots(figsize=(4, 3), facecolor='#1F2937')
                 ax.set_facecolor('#1F2937')
-                ax.bar(labels, [prob_real, prob_fake], color=['#10B981', '#EF4444'], width=0.5)
+                ax.bar(['Real', 'Fake'], [prob_real, prob_fake], 
+                       color=['#10B981', '#EF4444'], width=0.5)
                 ax.set_ylabel('Confidence (%)', color='white')
-                ax.set_title('Detection Results', color='white', fontsize=12)  # Smaller font
+                ax.set_title('Detection Results', color='white', fontsize=12)
                 ax.set_ylim(0, 100)
                 ax.tick_params(colors='white')
                 
@@ -117,13 +107,12 @@ def predict_image():
                     spine.set_visible(False)
                 
                 buffer = io.BytesIO()
-                plt.savefig(buffer, format='png', bbox_inches='tight', dpi=72)  # Lower DPI
-                plt.close(fig)  # Explicitly close figure
+                plt.savefig(buffer, format='png', bbox_inches='tight', dpi=72)
+                plt.close(fig)
                 buffer.seek(0)
                 graph_string = base64.b64encode(buffer.getvalue()).decode()
-                buffer.close()  # Close buffer
+                buffer.close()
                 
-                # Clean up file and force garbage collection
                 os.remove(file_path)
                 gc.collect()
                 
@@ -137,10 +126,10 @@ def predict_image():
             except Exception as e:
                 print(f"Error: {e}")
                 try:
-                    os.remove(file_path)  # Clean up on error
+                    os.remove(file_path)
                 except:
                     pass
-                gc.collect()  # Force cleanup on error
+                gc.collect()
                 return render_template('predict.html', error="Error processing request")
     
     return render_template('predict.html')
@@ -150,5 +139,5 @@ def ping():
     return {'status': 'ok', 'message': 'FaceTruth API is running'}, 200
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
