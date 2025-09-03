@@ -1,7 +1,7 @@
 from flask import Flask, render_template, request, jsonify
 import os
 import torch
-from torchvision.transforms import transforms
+from torchvision import transforms
 from PIL import Image
 import numpy as np
 import matplotlib
@@ -9,6 +9,7 @@ matplotlib.use('Agg')  # Use non-GUI backend
 import matplotlib.pyplot as plt
 import base64
 import io
+import gc  # Added for memory management
 from werkzeug.utils import secure_filename
 from model import MesoNet
 
@@ -19,8 +20,9 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 # Create upload folder
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
+# Optimized transform with smaller image size
 transform = transforms.Compose([
-    transforms.Resize((256, 256)),
+    transforms.Resize((224, 224)),  # Reduced from 256x256 to save memory
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
@@ -36,16 +38,31 @@ try:
 except Exception as e:
     print(f"Error loading model: {e}")
 
+# Try to optimize model with TorchScript (optional)
+try:
+    model = torch.jit.script(model)
+    print("Model converted to TorchScript for efficiency")
+except Exception as e:
+    print(f"TorchScript conversion failed: {e}")
+
 def predict(image_path):
     try:
         image = Image.open(image_path).convert('RGB')
         image = transform(image).unsqueeze(0)
         image = image.to(device)
         
+        # Clear memory before inference
+        gc.collect()
+        
         with torch.no_grad():
             outputs = model(image)
             probs = outputs[0].cpu().detach().numpy()
-            return probs
+            
+        # Clean up intermediate variables
+        del image, outputs
+        gc.collect()
+        
+        return probs
     except Exception as e:
         print(f"Prediction error: {e}")
         return None
@@ -70,8 +87,12 @@ def predict_image():
                 file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                 file.save(file_path)
                 
+                # Force garbage collection before prediction
+                gc.collect()
+                
                 prob = predict(file_path)
                 if prob is None:
+                    os.remove(file_path)  # Clean up immediately on error
                     return render_template('predict.html', error="Error processing image")
                 
                 prob = prob[0]
@@ -79,30 +100,32 @@ def predict_image():
                 prob_fake = (1 - prob) * 100
                 prediction_label = 'Real' if prob > 0.5 else 'Fake'
                 
+                # Create memory-efficient plot
                 labels = ['Real', 'Fake']
-                plt.figure(figsize=(6, 4), facecolor='#1F2937')
-                ax = plt.gca()
+                fig, ax = plt.subplots(figsize=(4, 3), facecolor='#1F2937')  # Smaller figure
                 ax.set_facecolor('#1F2937')
-                plt.bar(labels, [prob_real, prob_fake], color=['#10B981', '#EF4444'], width=0.5)
-                plt.ylabel('Confidence (%)', color='white')
-                plt.title('Detection Results', color='white', fontsize=14, fontweight='bold')
-                plt.ylim(0, 100)
-                plt.yticks([0, 20, 40, 60, 80, 100], color='white')
-                plt.xticks(color='white')
+                ax.bar(labels, [prob_real, prob_fake], color=['#10B981', '#EF4444'], width=0.5)
+                ax.set_ylabel('Confidence (%)', color='white')
+                ax.set_title('Detection Results', color='white', fontsize=12)  # Smaller font
+                ax.set_ylim(0, 100)
+                ax.tick_params(colors='white')
                 
                 for i, v in enumerate([prob_real, prob_fake]):
-                    plt.text(i, v + 2, f"{v:.1f}%", ha='center', color='white', fontweight='bold')
+                    ax.text(i, v + 2, f"{v:.1f}%", ha='center', color='white', fontweight='bold')
                 
                 for spine in ax.spines.values():
                     spine.set_visible(False)
                 
                 buffer = io.BytesIO()
-                plt.savefig(buffer, format='png', bbox_inches='tight')
-                plt.close()  # Important: free memory
+                plt.savefig(buffer, format='png', bbox_inches='tight', dpi=72)  # Lower DPI
+                plt.close(fig)  # Explicitly close figure
                 buffer.seek(0)
                 graph_string = base64.b64encode(buffer.getvalue()).decode()
+                buffer.close()  # Close buffer
                 
+                # Clean up file and force garbage collection
                 os.remove(file_path)
+                gc.collect()
                 
                 return render_template('predict.html', 
                                        graph=graph_string, 
@@ -110,8 +133,14 @@ def predict_image():
                                        filename=filename,
                                        prob_real=f"{prob_real:.1f}",
                                        prob_fake=f"{prob_fake:.1f}")
+                                       
             except Exception as e:
                 print(f"Error: {e}")
+                try:
+                    os.remove(file_path)  # Clean up on error
+                except:
+                    pass
+                gc.collect()  # Force cleanup on error
                 return render_template('predict.html', error="Error processing request")
     
     return render_template('predict.html')
