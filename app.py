@@ -113,13 +113,22 @@ def predict_image():
                 graph_string = base64.b64encode(buffer.getvalue()).decode()
                 buffer.close()
                 
+                # Convert uploaded image to base64 for display
+                # Detect image format from file extension
+                file_ext = filename.lower().split('.')[-1]
+                mime_type = 'image/jpeg' if file_ext in ['jpg', 'jpeg'] else f'image/{file_ext}'
+                
+                with open(file_path, 'rb') as img_file:
+                    uploaded_img_base64 = base64.b64encode(img_file.read()).decode()
+                
                 os.remove(file_path)
                 gc.collect()
                 
                 return render_template('predict.html', 
                                        graph=graph_string, 
                                        prediction=prediction_label, 
-                                       filename=filename,
+                                       uploaded_image=uploaded_img_base64,
+                                       image_mime_type=mime_type,
                                        prob_real=f"{prob_real:.1f}",
                                        prob_fake=f"{prob_fake:.1f}")
                                        

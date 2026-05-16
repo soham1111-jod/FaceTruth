@@ -64,7 +64,7 @@
             
             <div class="flex flex-col md:flex-row items-center justify-around gap-8">
                 <div class="bg-gray-800 p-4 rounded-lg">
-                    <img src="static/images/{{ filename }}" alt="Uploaded Image" class="w-64 h-64 object-cover rounded-lg">
+                    <img src="data:{{ image_mime_type }};base64,{{ uploaded_image }}" alt="Uploaded Image" class="w-64 h-64 object-cover rounded-lg">
                     <p class="text-gray-300 text-center mt-2">Uploaded Image</p>
                 </div>
                 
