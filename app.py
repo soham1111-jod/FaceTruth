@@ -147,6 +147,10 @@ def predict_image():
 def ping():
     return {'status': 'ok', 'message': 'FaceTruth API is running'}, 200
 
+@app.route('/health')
+def health():
+    return 'ok', 200
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
