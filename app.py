@@ -1,17 +1,14 @@
 from flask import Flask, render_template, request, jsonify, send_from_directory
 import os
-import torch
-from torchvision import transforms
-from PIL import Image
+import onnxruntime as ort
 import numpy as np
+from PIL import Image
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import base64
 import io
-import gc
 from werkzeug.utils import secure_filename
-from model import MesoNet
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'static/images'
@@ -19,18 +16,9 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-transform = transforms.Compose([
-    transforms.Resize((256, 256)),  # Match your trained model
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
-
-device = torch.device("cpu")
-model = MesoNet().to(device)
-
+# Load ONNX model
 try:
-    model.load_state_dict(torch.load("mesonet_model.pth", map_location=device))
-    model.eval()
+    ort_session = ort.InferenceSession("mesonet_model.onnx")
     print("Model loaded successfully")
 except Exception as e:
     print(f"Error loading model: {e}")
@@ -42,19 +30,27 @@ def serve_static(path):
 
 def predict(image_path):
     try:
+        # Load and preprocess image
         image = Image.open(image_path).convert('RGB')
-        image = transform(image).unsqueeze(0).to(device)
+        image = image.resize((256, 256))
         
-        gc.collect()
+        # Convert to numpy array and normalize
+        img_array = np.array(image).astype(np.float32) / 255.0
         
-        with torch.no_grad():
-            outputs = model(image)
-            probs = outputs[0].cpu().detach().numpy()
-            
-        del image, outputs
-        gc.collect()
+        # Apply ImageNet normalization
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        img_array = (img_array - mean) / std
         
-        return probs
+        # Transpose to CHW format and add batch dimension
+        img_array = np.transpose(img_array, (2, 0, 1)).astype(np.float32)
+        img_array = np.expand_dims(img_array, axis=0).astype(np.float32)
+        
+        # Run inference
+        ort_inputs = {ort_session.get_inputs()[0].name: img_array}
+        ort_outputs = ort_session.run(None, ort_inputs)
+        
+        return ort_outputs[0][0]
     except Exception as e:
         print(f"Prediction error: {e}")
         return None
@@ -78,8 +74,6 @@ def predict_image():
                 filename = secure_filename(file.filename)
                 file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                 file.save(file_path)
-                
-                gc.collect()
                 
                 prob = predict(file_path)
                 if prob is None:
@@ -122,7 +116,6 @@ def predict_image():
                     uploaded_img_base64 = base64.b64encode(img_file.read()).decode()
                 
                 os.remove(file_path)
-                gc.collect()
                 
                 return render_template('predict.html', 
                                        graph=graph_string, 
@@ -138,7 +131,6 @@ def predict_image():
                     os.remove(file_path)
                 except:
                     pass
-                gc.collect()
                 return render_template('predict.html', error="Error processing request")
     
     return render_template('predict.html')
